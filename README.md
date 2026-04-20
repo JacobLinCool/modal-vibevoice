@@ -301,14 +301,36 @@ uv.lock
 README.md
 LICENSE
 scripts/
+  benchmark.py              Multi-GPU sweep; emits per-GPU JSON + a
+                            markdown comparison report
   plot_vram.py              Regenerates assets/vram_curves.png and prints
                             the safe max batch_size table
 assets/
   vram_curves.png           VRAM & safe-batch curves used in this README
+benchmarks/                 (git-ignored) Timestamped benchmark outputs
 ```
 
 Test/benchmark audio files are git-ignored; bring your own `test.mp3`
 (any audio ffmpeg can decode will work with the entrypoints above).
+
+### Reproducing the multi-GPU numbers
+
+```bash
+# Sequential 4-way sweep (safest; one GPU at a time)
+uv run python scripts/benchmark.py test.mp3 \
+  --context-info "Domain: ...; Speakers: ..."
+
+# Parallel sweep (fastest; spins up one modal run per GPU concurrently)
+uv run python scripts/benchmark.py test.mp3 --parallel \
+  --gpus RTX-PRO-6000 H100 A100-80GB A100-40GB
+
+# Single GPU, longer chunks for a 6h job
+uv run python scripts/benchmark.py 6h_recording.wav \
+  --gpus RTX-PRO-6000 --chunk-target-min 45 --chunk-max-min 55
+```
+
+Output lands in `benchmarks/<timestamp>/` with per-GPU JSON, per-GPU log,
+a combined `summary.json`, and a `report.md` comparison table.
 
 ---
 

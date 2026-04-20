@@ -511,6 +511,22 @@ class VibeVoiceASR:
         prev_tail = ""
         gen_total = 0.0
 
+        # pynvml sampler: collect GPU util + memory BW util across all
+        # generate() calls so the final report covers the full chunked run.
+        import threading
+
+        util_samples: list[tuple[int, int]] = []
+        util_stop = threading.Event()
+
+        def _sampler():
+            while not util_stop.is_set():
+                u = pynvml.nvmlDeviceGetUtilizationRates(nvml_h)
+                util_samples.append((u.gpu, u.memory))
+                util_stop.wait(0.5)
+
+        sampler_th = threading.Thread(target=_sampler, daemon=True)
+        sampler_th.start()
+
         # Process in micro-batches of `batch_size` (auto-pick if ≤ 0)
         if batch_size and batch_size > 0:
             bs = int(batch_size)
@@ -570,6 +586,9 @@ class VibeVoiceASR:
             if prime_with_prev_tail:
                 prev_tail = _tail_text(results[-1]["segments"], prev_tail_seconds)
 
+        util_stop.set()
+        sampler_th.join(timeout=2)
+
         unify_info: dict = {}
         if unify_speakers:
             unify_info = self._unify_speakers(
@@ -580,12 +599,30 @@ class VibeVoiceASR:
         peak_reserved = int(torch.cuda.max_memory_reserved())
         nvml_used_after = pynvml.nvmlDeviceGetMemoryInfo(nvml_h).used
 
+        import numpy as _np
+
+        if util_samples:
+            sm = [s[0] for s in util_samples]
+            mb = [s[1] for s in util_samples]
+            gpu_util = {
+                "samples": len(util_samples),
+                "sm_util_mean": float(_np.mean(sm)),
+                "sm_util_p50": float(_np.percentile(sm, 50)),
+                "sm_util_p95": float(_np.percentile(sm, 95)),
+                "sm_util_max": float(_np.max(sm)),
+                "mem_bw_util_mean": float(_np.mean(mb)),
+                "mem_bw_util_p95": float(_np.percentile(mb, 95)),
+            }
+        else:
+            gpu_util = {}
+
         return {
             "gpu_name": gpu_name,
             "gpu_total_mem_mb": round(gpu_total_mem / 1024**2, 1),
             "peak_alloc_mb": round(peak_alloc / 1024**2, 1),
             "peak_reserved_mb": round(peak_reserved / 1024**2, 1),
             "nvml_mem_used_after_mb": round(nvml_used_after / 1024**2, 1),
+            "gpu_util": gpu_util,
             "audio_duration_s": round(audio_duration, 3),
             "decode_s": round(decode_t, 3),
             "vad_s": round(vad_t, 3),
@@ -1203,6 +1240,18 @@ def long(
         )
     print(f"Total segments  : {len(result['segments'])}")
     print(f"Output chars    : {len(result['text'])}")
+    gu = result.get("gpu_util") or {}
+    if gu:
+        print(
+            f"SM util mean/p50/p95/max : "
+            f"{gu['sm_util_mean']:.1f}% / {gu['sm_util_p50']:.1f}% / "
+            f"{gu['sm_util_p95']:.1f}% / {gu['sm_util_max']:.1f}%"
+        )
+        print(
+            f"Mem-BW util mean/p95     : "
+            f"{gu['mem_bw_util_mean']:.1f}% / {gu['mem_bw_util_p95']:.1f}% "
+            f"(n={gu['samples']})"
+        )
     u = result.get("unify") or {}
     if u:
         print(

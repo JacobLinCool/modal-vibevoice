@@ -16,7 +16,6 @@ import urllib.request
 
 
 def transcribe(audio_path: str, endpoint_url: str) -> None:
-
     boundary = "----modalvibevoiceboundary"
     audio_bytes = Path(audio_path).read_bytes()
     filename = Path(audio_path).name
