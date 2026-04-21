@@ -10,9 +10,8 @@ the `VibeVoiceASR` class).
 from __future__ import annotations
 
 import sys
-from pathlib import Path
-
 import urllib.request
+from pathlib import Path
 
 
 def transcribe(audio_path: str, endpoint_url: str) -> None:
