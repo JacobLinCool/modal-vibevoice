@@ -849,7 +849,7 @@ class VibeVoiceASR:
 # Empirically calibrated VRAM model; see scripts/plot_vram.py.
 _WEIGHTS_GB = 18.0
 _HEADROOM_GB = 5.0
-_KV_GB_PER_CHUNK_MIN = 0.15
+_KV_GB_PER_CHUNK_MIN = 0.22
 
 
 def _auto_batch_size(

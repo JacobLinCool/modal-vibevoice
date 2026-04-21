@@ -1,11 +1,12 @@
 """Render the chunk-minute × VRAM × safe-batch curves for VibeVoice-ASR.
 
-VRAM model (empirically calibrated against the multi-GPU benchmark):
+VRAM model (empirically calibrated against the multi-GPU benchmark and the
+3.86-hour synthesized run on RTX PRO 6000):
     peak_vram(GB) = weights + headroom + KV_per_min × chunk_minutes × batch_size
-                  = 18    +   5      + 0.15           × chunk_minutes × batch_size
+                  = 18    +   5      + 0.22           × chunk_minutes × batch_size
 
 Solving for batch:
-    safe_batch = floor((vram - 23) / (0.15 × chunk_minutes))
+    safe_batch = floor((vram - 23) / (0.22 × chunk_minutes))
 """
 
 from __future__ import annotations
@@ -17,7 +18,7 @@ import numpy as np
 
 WEIGHTS_GB = 18.0
 HEADROOM_GB = 5.0
-KV_PER_MIN_GB = 0.15  # measured: 28 GB peak − 18 GB weights = 10 GB / (3 chunks × 20 min) ≈ 0.167; round down
+KV_PER_MIN_GB = 0.22  # measured from the 3.86h run: alloc 59.3 GB at batch=5 × 45 min ⇒ 0.18 GB/(chunk·min); bumped to 0.22 to cover pool fragmentation peaks (reserved 87.6 GB)
 
 # Modal GPUs we tested + L40S as a workstation reference.
 GPUS = [

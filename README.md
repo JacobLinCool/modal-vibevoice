@@ -85,10 +85,11 @@ only changes wall time, not what comes back.
 
 ## VRAM model and auto batch sizing
 
-Empirically calibrated:
+Empirically calibrated (against a 3.86-hour run on RTX PRO 6000 with 5×45-min
+chunks peaking at 59 GB allocated / 87 GB reserved):
 
 ```
-peak_vram(GB) ≈ 18 (weights) + 5 (headroom) + 0.15 × chunk_minutes × batch_size
+peak_vram(GB) ≈ 18 (weights) + 5 (headroom) + 0.22 × chunk_minutes × batch_size
 ```
 
 `batch_size=0` (the default) picks the largest safe value at runtime via
@@ -98,10 +99,10 @@ Max safe `batch_size` per GPU per chunk size:
 
 | GPU                              | 10 min | 20 min | 30 min | 45 min | 55 min |
 |----------------------------------|-------:|-------:|-------:|-------:|-------:|
-| RTX PRO 6000 Blackwell (96 GB)   |     48 |     24 |     16 |     10 |      8 |
-| H100 / A100-80 (80 GB)           |     38 |     19 |     12 |      8 |      6 |
-| L40S (48 GB)                     |     16 |      8 |      5 |      3 |      3 |
-| A100-40GB (40 GB)                |     11 |      5 |      3 |      2 |      2 |
+| RTX PRO 6000 Blackwell (96 GB)   |     33 |     16 |     11 |      7 |      6 |
+| H100 / A100-80 (80 GB)           |     25 |     12 |      8 |      5 |      4 |
+| L40S (48 GB)                     |     11 |      5 |      3 |      2 |      2 |
+| A100-40GB (40 GB)                |      7 |      3 |      2 |      1 |      1 |
 
 Curve plot in [`assets/vram_curves.png`](./assets/vram_curves.png);
 regenerate with:
