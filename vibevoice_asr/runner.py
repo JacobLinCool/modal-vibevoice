@@ -78,16 +78,18 @@ class VibeVoiceASRRunner:
             self.config.model_name,
             language_model_pretrained_name=self.config.tokenizer_name,
         )
-        self.model = (
-            VibeVoiceASRForConditionalGeneration.from_pretrained(
-                self.config.model_name,
-                dtype=torch.bfloat16,
-                attn_implementation="flash_attention_2",
-                trust_remote_code=True,
-            )
-            .to("cuda")
-            .eval()
-        )
+        # `device_map="cuda"` works for both full-precision and bnb-quantized
+        # checkpoints. bnb 4-bit models self-describe via `quantization_config`
+        # in config.json, so transformers auto-applies it — no explicit
+        # BitsAndBytesConfig needed here. Calling `.to("cuda")` on a bnb model
+        # would raise, so we rely on accelerate's dispatch instead.
+        self.model = VibeVoiceASRForConditionalGeneration.from_pretrained(
+            self.config.model_name,
+            dtype=torch.bfloat16,
+            attn_implementation="flash_attention_2",
+            device_map="cuda",
+            trust_remote_code=True,
+        ).eval()
         self.vad = SileroVAD(self.config.silero_vad_path)
         self.spk_embedder = SpeakerEmbedder(self.config.speaker_model_path)
 

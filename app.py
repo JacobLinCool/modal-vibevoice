@@ -39,6 +39,16 @@ APP_NAME = "vibevoice-asr"
 #   MODAL_GPU=A100-40GB uv run modal run app.py::long ...
 GPU_TYPE = os.environ.get("MODAL_GPU", "RTX-PRO-6000")
 
+# Override to swap in a quantized variant (e.g. scerz/VibeVoice-ASR-4bit).
+# 4-bit bnb checkpoints carry their own `quantization_config` in config.json,
+# so the loader auto-applies it — only the `bitsandbytes` dependency is new.
+MODEL_NAME = os.environ.get("VIBEVOICE_MODEL", "microsoft/VibeVoice-ASR")
+
+
+def _runner_config() -> RunnerConfig:
+    return RunnerConfig(model_name=MODEL_NAME)
+
+
 hf_cache = modal.Volume.from_name("vibevoice-hf-cache", create_if_missing=True)
 
 
@@ -47,7 +57,7 @@ def _prefetch_weights() -> None:
     # image layer so `@modal.enter` never hits the network.
     from vibevoice_asr.runner import VibeVoiceASRRunner
 
-    VibeVoiceASRRunner.prefetch_weights(RunnerConfig())
+    VibeVoiceASRRunner.prefetch_weights(_runner_config())
 
 
 image = (
@@ -62,6 +72,16 @@ image = (
             "HF_HUB_ENABLE_HF_TRANSFER": "1",
             "PIP_NO_CACHE_DIR": "1",
             "PYTHONUNBUFFERED": "1",
+            # Bake MODEL_NAME into the image so remote build (prefetch) and
+            # runtime containers both see it — otherwise they re-import app.py
+            # without the local shell's env and silently fall back to default.
+            # Becomes part of the image cache key, so swapping models rebuilds.
+            "VIBEVOICE_MODEL": MODEL_NAME,
+            # NGC 25.12 links PyTorch against CUDA 13.1, but the host driver
+            # advertises only CUDA 13.0 (see the compat-mode warning at
+            # container start). bitsandbytes ships pre-compiled .so files up
+            # through cuda130 — pin it so bnb loads a binary the driver runs.
+            "BNB_CUDA_VERSION": "130",
         }
     )
     .run_commands(
@@ -69,6 +89,7 @@ image = (
         (
             "uv pip install --system --no-cache-dir "
             "'transformers>=4.51.3,<5.0.0' accelerate hf_transfer huggingface_hub "
+            "bitsandbytes "
             "librosa soundfile scipy diffusers ml-collections absl-py "
             "tqdm pydub 'numba>=0.57.0' 'llvmlite>=0.40.0' fastapi python-multipart "
             "pynvml onnxruntime scikit-learn sherpa-onnx"
@@ -102,7 +123,7 @@ class VibeVoiceASR:
         # Stage 2 (ENTER): once per container.
         from vibevoice_asr.runner import VibeVoiceASRRunner
 
-        self.runner = VibeVoiceASRRunner(RunnerConfig())
+        self.runner = VibeVoiceASRRunner(_runner_config())
         self.runner.load()
 
     # Stage 3 (REQUEST): every method below is a thin wrapper over the
