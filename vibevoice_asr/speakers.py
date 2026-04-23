@@ -38,14 +38,20 @@ def unify_speakers(
     segments: list[dict],
     embedder: SpeakerEmbedder,
     distance_threshold: float = 0.3,
-    min_audio_per_speaker_s: float = 1.0,
+    min_audio_per_speaker_s: float = 3.0,
     max_audio_per_speaker_s: float = 30.0,
+    outlier_mad_k: float = 3.0,
 ) -> dict:
     """Cluster (chunk_id, local_speaker_id) keys across chunks via x-vectors.
 
+    For each key, embed every segment ≥ `min_audio_per_speaker_s` individually
+    (truncated at `max_audio_per_speaker_s`), reject outliers whose cosine
+    distance to the centroid exceeds `median + outlier_mad_k × MAD` when there
+    are ≥3 embeddings, then mean the survivors into a single per-key vector.
+    Keys with no qualifying segment are dropped (no concat fallback).
+
     Mutates `segments` in place: rewrites `global_speaker_id` to `S{k}` for
-    the global cluster id, or leaves the per-chunk fallback when there's
-    not enough audio for a reliable embedding.
+    the global cluster id, or leaves the per-chunk fallback otherwise.
     """
     import time as _time
     from collections import Counter
@@ -56,8 +62,7 @@ def unify_speakers(
 
     t0 = _time.perf_counter()
 
-    # Collect audio slices for each (chunk_id, local_speaker_id)
-    per_speaker: dict[tuple[int, int], list] = {}
+    per_speaker: dict[tuple[int, int], list[tuple[int, int]]] = {}
     for seg in segments:
         spk = seg.get("speaker_id")
         ck = seg.get("chunk_id")
@@ -77,30 +82,72 @@ def unify_speakers(
     keys: list[tuple[int, int]] = []
     embeddings: list = []
     skipped: list[dict] = []
+    per_key_diag: list[dict] = []
     min_samples = int(min_audio_per_speaker_s * sr)
     max_samples = int(max_audio_per_speaker_s * sr)
 
     for key, ranges in per_speaker.items():
-        slices = [audio[s:e] for s, e in ranges]
-        if not slices:
-            continue
-        joined = np.concatenate(slices)
-        if len(joined) < min_samples:
+        seg_embs: list = []
+        used_audio_s = 0.0
+        for s, e in ranges:
+            if e - s < min_samples:
+                continue
+            clip = audio[s:e]
+            if len(clip) > max_samples:
+                clip = clip[:max_samples]
+            clip_16k = librosa.resample(
+                clip.astype(np.float32), orig_sr=sr, target_sr=16000
+            )
+            emb = embedder.embed(clip_16k)
+            emb = emb / (np.linalg.norm(emb) + 1e-9)
+            seg_embs.append(emb)
+            used_audio_s += len(clip) / sr
+
+        if not seg_embs:
+            total_s = sum((e - s) for s, e in ranges) / sr
+            max_seg_s = max((e - s) for s, e in ranges) / sr
             skipped.append(
                 {
                     "chunk_id": key[0],
                     "local_speaker_id": key[1],
-                    "audio_s": round(len(joined) / sr, 3),
+                    "num_segments": len(ranges),
+                    "total_audio_s": round(total_s, 3),
+                    "max_segment_s": round(max_seg_s, 3),
                 }
             )
             continue
-        if len(joined) > max_samples:
-            joined = joined[:max_samples]
-        joined_16k = librosa.resample(
-            joined.astype(np.float32), orig_sr=sr, target_sr=16000
-        )
-        embeddings.append(embedder.embed(joined_16k))
+
+        arr = np.stack(seg_embs, axis=0)
+        num_embedded = len(arr)
+        rejected = 0
+        if num_embedded >= 3:
+            centroid = arr.mean(axis=0)
+            centroid = centroid / (np.linalg.norm(centroid) + 1e-9)
+            dists = 1.0 - arr @ centroid
+            med = float(np.median(dists))
+            mad = float(np.median(np.abs(dists - med)))
+            if mad > 1e-6:
+                threshold = med + outlier_mad_k * mad
+                mask = dists <= threshold
+                kept = int(mask.sum())
+                if 1 <= kept < num_embedded:
+                    arr = arr[mask]
+                    rejected = num_embedded - kept
+
+        mean_emb = arr.mean(axis=0)
+        mean_emb = mean_emb / (np.linalg.norm(mean_emb) + 1e-9)
+        embeddings.append(mean_emb)
         keys.append(key)
+        per_key_diag.append(
+            {
+                "chunk_id": key[0],
+                "local_speaker_id": key[1],
+                "num_segments_total": len(ranges),
+                "num_segments_embedded": num_embedded,
+                "num_segments_rejected": rejected,
+                "used_audio_s": round(used_audio_s, 3),
+            }
+        )
 
     if len(keys) == 0:
         return {
@@ -112,9 +159,7 @@ def unify_speakers(
         }
 
     embs = np.stack(embeddings, axis=0)
-    embs = embs / (np.linalg.norm(embs, axis=1, keepdims=True) + 1e-9)
 
-    # Pairwise cosine distance matrix (for diagnostics)
     sim = embs @ embs.T
     np.clip(sim, -1.0, 1.0, out=sim)
     dist_matrix = (1.0 - sim).round(4).tolist()
@@ -132,7 +177,6 @@ def unify_speakers(
 
     mapping = {k: int(lab) for k, lab in zip(keys, labels)}
 
-    # Rewrite segments
     for seg in segments:
         ck = seg.get("chunk_id")
         sp = seg.get("speaker_id")
@@ -150,8 +194,9 @@ def unify_speakers(
         "num_skipped": len(skipped),
         "skipped": skipped,
         "distance_threshold": distance_threshold,
+        "outlier_mad_k": outlier_mad_k,
         "cluster_sizes": {f"S{k}": v for k, v in sorted(sizes.items())},
-        "keys": [{"chunk_id": k[0], "local_speaker_id": k[1]} for k in keys],
+        "keys": per_key_diag,
         "distance_matrix": dist_matrix,
         "mapping": [
             {
