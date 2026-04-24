@@ -41,6 +41,7 @@ def unify_speakers(
     min_audio_per_speaker_s: float = 3.0,
     max_audio_per_speaker_s: float = 30.0,
     outlier_mad_k: float = 3.0,
+    return_speaker_embeddings: bool = True,
 ) -> dict:
     """Cluster (chunk_id, local_speaker_id) keys across chunks via x-vectors.
 
@@ -49,6 +50,17 @@ def unify_speakers(
     distance to the centroid exceeds `median + outlier_mad_k × MAD` when there
     are ≥3 embeddings, then mean the survivors into a single per-key vector.
     Keys with no qualifying segment are dropped (no concat fallback).
+
+    Agglomerative average-linkage clustering on these per-key vectors with a
+    cannot-link mask: within a chunk, different `local_speaker_id`s must not
+    merge (distance flooded to ∞), preserving VibeVoice's local diarization
+    as a hard constraint and keeping the clustering adaptive even when the
+    embedding distance space is compressed.
+
+    If `return_speaker_embeddings`, the processed per-key x-vectors (post
+    MAD-rejection + mean + L2 norm, 192-d) are returned in
+    `result["speaker_embeddings"]`, grouped by `global_speaker_id` — a speaker
+    found in N chunks contributes N embeddings.
 
     Mutates `segments` in place: rewrites `global_speaker_id` to `S{k}` for
     the global cluster id, or leaves the per-chunk fallback otherwise.
@@ -162,18 +174,33 @@ def unify_speakers(
 
     sim = embs @ embs.T
     np.clip(sim, -1.0, 1.0, out=sim)
-    dist_matrix = (1.0 - sim).round(4).tolist()
+    raw_dist = (1.0 - sim).astype(np.float32)
+    np.clip(raw_dist, 0.0, 2.0, out=raw_dist)
+    dist_matrix = np.round(raw_dist, 4).tolist()
 
     if len(keys) == 1:
         labels = np.array([0])
     else:
+        # Cannot-link: within a chunk, VibeVoice already decided two
+        # different local_speaker_ids are two different people. Flood
+        # their pairwise distance so any agglomerative merge spanning
+        # such a pair has infinite average linkage and is rejected.
+        # Eliminates the need to tune the threshold tighter when the
+        # embedding space is compressed.
+        LARGE_DIST = 1e6
+        constrained = raw_dist.copy()
+        for i, (ci, _) in enumerate(keys):
+            for j, (cj, _) in enumerate(keys):
+                if i != j and ci == cj:
+                    constrained[i, j] = LARGE_DIST
+
         clustering = AgglomerativeClustering(
             n_clusters=None,
-            metric="cosine",
+            metric="precomputed",
             linkage="average",
             distance_threshold=distance_threshold,
         )
-        labels = clustering.fit_predict(embs)
+        labels = clustering.fit_predict(constrained)
 
     mapping = {k: int(lab) for k, lab in zip(keys, labels)}
 
@@ -187,7 +214,7 @@ def unify_speakers(
             seg["global_speaker_id"] = f"S{mapping[key]}"
 
     sizes = Counter(int(label) for label in labels)
-    return {
+    result = {
         "elapsed_s": round(_time.perf_counter() - t0, 3),
         "num_global_speakers": int(len(set(labels))),
         "num_keys_embedded": int(len(keys)),
@@ -195,6 +222,7 @@ def unify_speakers(
         "skipped": skipped,
         "distance_threshold": distance_threshold,
         "outlier_mad_k": outlier_mad_k,
+        "same_chunk_cannot_link": True,
         "cluster_sizes": {f"S{k}": v for k, v in sorted(sizes.items())},
         "keys": per_key_diag,
         "distance_matrix": dist_matrix,
@@ -207,3 +235,16 @@ def unify_speakers(
             for k in keys
         ],
     }
+    if return_speaker_embeddings:
+        spk_to_embs: dict[str, list[dict]] = {}
+        for key, emb in zip(keys, embeddings):
+            gid = f"S{mapping[key]}"
+            spk_to_embs.setdefault(gid, []).append(
+                {
+                    "chunk_id": key[0],
+                    "local_speaker_id": key[1],
+                    "embedding": emb.astype(np.float32).tolist(),
+                }
+            )
+        result["speaker_embeddings"] = spk_to_embs
+    return result

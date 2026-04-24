@@ -115,7 +115,7 @@ app = modal.App(APP_NAME, image=image)
     gpu=GPU_TYPE,
     volumes={HF_CACHE_DIR: hf_cache},
     timeout=3600,
-    scaledown_window=600,
+    scaledown_window=60,
 )
 class VibeVoiceASR:
     @modal.enter()
@@ -191,6 +191,7 @@ class VibeVoiceASR:
         batch_size: int = 0,
         unify_speakers: bool = True,
         unify_distance_threshold: float = 0.3,
+        return_speaker_embeddings: bool = True,
     ) -> dict:
         return self.runner.transcribe_long(
             audio_bytes,
@@ -203,6 +204,7 @@ class VibeVoiceASR:
             batch_size=batch_size,
             unify_speakers=unify_speakers,
             unify_distance_threshold=unify_distance_threshold,
+            return_speaker_embeddings=return_speaker_embeddings,
         )
 
     @modal.asgi_app()
@@ -248,6 +250,7 @@ class VibeVoiceASR:
             batch_size: int = Form(0),
             unify_speakers: bool = Form(True),
             unify_distance_threshold: float = Form(0.3),
+            return_speaker_embeddings: bool = Form(True),
         ):
             data = await audio.read()
             if not data:
@@ -263,6 +266,7 @@ class VibeVoiceASR:
                 batch_size=batch_size,
                 unify_speakers=unify_speakers,
                 unify_distance_threshold=unify_distance_threshold,
+                return_speaker_embeddings=return_speaker_embeddings,
             )
 
         return api
@@ -331,6 +335,7 @@ def long(
     batch_size: int = 0,
     no_unify: bool = False,
     unify_distance_threshold: float = 0.3,
+    no_speaker_embeddings: bool = False,
     out_json: str | None = None,
 ):
     """Long-form (multi-hour) transcription via VAD-aware chunking."""
@@ -354,6 +359,7 @@ def long(
         batch_size=batch_size,
         unify_speakers=not no_unify,
         unify_distance_threshold=unify_distance_threshold,
+        return_speaker_embeddings=not no_speaker_embeddings,
     )
     wall = time.perf_counter() - t0
 

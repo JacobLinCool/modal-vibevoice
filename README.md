@@ -228,7 +228,7 @@ on CPU via sherpa-onnx, ~7 MB). CAM++ embeddings are language-agnostic
 in practice.
 
 ```mermaid
-flowchart LR
+flowchart TD
     A[Segments tagged<br/>chunk_id + local speaker_id] --> B[Group by<br/>chunk_id, local speaker_id]
     B --> C[For each key]
     C --> D[Pick segments ≥ 3s<br/>truncate each to 30s]
@@ -241,14 +241,27 @@ flowchart LR
     I --> K[Mean survivors<br/>→ L2 normalize]
     J --> K
     K --> L[Per-key x-vector]
-    L --> M[Agglomerative clustering<br/>cosine / avg linkage<br/>distance_threshold = 0.3]
-    M --> N[Rewrite segments with<br/>global_speaker_id = S0, S1, ...]
+    L --> M[Build distance matrix<br/>+ cannot-link mask:<br/>same-chunk pairs → ∞]
+    M --> N[Agglomerative clustering<br/>precomputed / avg linkage<br/>distance_threshold = 0.3]
+    N --> O[Rewrite segments with<br/>global_speaker_id = S0, S1, ...]
 ```
 
 Per-segment embedding + MAD outlier rejection avoids two pitfalls of a
 naïve concat-then-embed: (1) splice boundaries from non-contiguous audio
 distort the x-vector, (2) one mislabelled segment can't drag the whole
 key's embedding.
+
+**Cannot-link constraint**: per-segment averaging compresses the embedding
+distance distribution (the channel/recording signature survives averaging
+while utterance-level variation is averaged out), so different speakers
+inside the same chunk can end up only ~0.2 apart. To stay adaptive without
+needing a tighter threshold, we lean on what VibeVoice already knows:
+within a chunk, different `local_speaker_id`s are different people. We
+flood those pairwise distances to infinity before clustering, so any
+average-linkage merge spanning such a pair is rejected. A speaker that
+truly appears in only one chunk (the short cameo in `test.mp3`) stays an
+isolated cluster because every merge attempt with an existing cluster
+crosses a same-chunk different-local boundary.
 
 Returned `result["unify"]`:
 
@@ -259,6 +272,10 @@ Returned `result["unify"]`:
 - `skipped`: keys with no segment ≥ 3s (`total_audio_s`, `max_segment_s`
   explain why)
 - `distance_matrix`: full pairwise cosine distances for threshold tuning
+- `speaker_embeddings` (on by default; pass `return_speaker_embeddings=False`
+  to skip): processed per-key 192-d x-vectors grouped by `global_speaker_id`;
+  a speaker found in N chunks contributes N entries, each tagged with its
+  `chunk_id` and `local_speaker_id`
 
 **Tuning**: `unify_distance_threshold` — lower → more clusters (over-split
 risk); raise for very similar voices. On the Mandarin `test.mp3`, 0.3
@@ -348,6 +365,7 @@ Output lands in `benchmarks/<timestamp>/` (per-GPU JSON + log,
 | `batch_size`               | `0`     | `0` = auto from VRAM; positive int = override |
 | `unify_speakers`           | `True`  | Run WeSpeaker CAM++ + agglomerative clustering |
 | `unify_distance_threshold` | `0.3`   | Lower = more clusters |
+| `return_speaker_embeddings`| `True`  | Include per-key 192-d x-vectors (post MAD + mean + L2) grouped by global speaker in `unify.speaker_embeddings`; set `False` to skip |
 
 ### Image build
 
@@ -376,6 +394,13 @@ Cached rebuilds: ~60 s.
   local-speaker)** to embed reliably. Keys with no qualifying segment
   appear in `unify.skipped` and keep their per-chunk fallback ID
   `c{N}_s{M}`.
+- **VibeVoice's chunk-local diarization is non-deterministic** — the
+  same audio can produce a different `local_speaker_id` partition
+  across runs (sampling in the decoder). The unification stage is
+  built to handle both clean (well-split chunks) and under-split
+  chunks; expect the set of `(chunk_id, local_speaker_id)` keys and
+  arbitrary `S0`/`S1`/… labels to differ run-to-run even when the
+  resulting speaker clustering is equivalent.
 - **Default speaker model is trained on English VoxCeleb.** CAM++
   embeddings are language-agnostic in practice; for Mandarin-heavy audio
   the 3D-Speaker zh-cn model is a drop-in swap (see *Cross-chunk speaker

@@ -341,6 +341,7 @@ class VibeVoiceASRRunner:
         batch_size: int = 0,
         unify_speakers: bool = True,
         unify_distance_threshold: float = 0.3,
+        return_speaker_embeddings: bool = True,
     ) -> dict:
         """Transcribe arbitrarily long audio via VAD-aware chunking.
 
@@ -406,7 +407,12 @@ class VibeVoiceASRRunner:
             unify_info: dict = {}
             if unify_speakers:
                 unify_info = _unify_speakers_fn(
-                    audio, sr, shifted, self.spk_embedder, unify_distance_threshold
+                    audio,
+                    sr,
+                    shifted,
+                    self.spk_embedder,
+                    unify_distance_threshold,
+                    return_speaker_embeddings=return_speaker_embeddings,
                 )
             peak_alloc = int(torch.cuda.max_memory_allocated())
             peak_reserved = int(torch.cuda.max_memory_reserved())
@@ -534,7 +540,12 @@ class VibeVoiceASRRunner:
         unify_info = {}
         if unify_speakers:
             unify_info = _unify_speakers_fn(
-                audio, sr, all_segments, self.spk_embedder, unify_distance_threshold
+                audio,
+                sr,
+                all_segments,
+                self.spk_embedder,
+                unify_distance_threshold,
+                return_speaker_embeddings=return_speaker_embeddings,
             )
 
         peak_alloc = int(torch.cuda.max_memory_allocated())
